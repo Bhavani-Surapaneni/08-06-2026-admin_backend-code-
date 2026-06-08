@@ -1,36 +1,22 @@
-import admin from "../config/firebase.js";
+import admin from "../config/firebaseAdmin.js";
 
-
-export const firebaseAuth = async (req, res, next) => {
+const firebaseAuth = async (req, res, next) => {
   try {
-    console.log("AUTH HEADER:", req.headers.authorization);
-    const authHeader = req.headers.authorization;
+    const token = req.headers.authorization?.split(" ")[1];
 
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
-      return res.status(401).json({
-        success: false,
-        message: "Missing Authorization token"
-      });
+    if (!token) {
+      return res.status(401).json({ message: "No token" });
     }
 
-    const token = authHeader.split(" ")[1];
     const decoded = await admin.auth().verifyIdToken(token);
 
-    req.firebaseUser = {
-      uid: decoded.uid,
-      email: decoded.email || null,
-      phone_number: decoded.phone_number || null
-    };
+    req.firebaseUser = decoded; // ✅ FIXED: was req.user
 
     next();
-  } catch (error) {
-    console.error("Firebase Auth Error:", error.message);
-
-    return res.status(401).json({
-      success: false,
-      message: "Invalid or expired Firebase token"
-    });
+  } catch (err) {
+    console.error("firebaseAuth error:", err.message);
+    res.status(401).json({ message: "Invalid token" });
   }
 };
 
-export const requireAuth = firebaseAuth;
+export default firebaseAuth;

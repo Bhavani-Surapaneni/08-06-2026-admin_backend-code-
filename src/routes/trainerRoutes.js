@@ -7,56 +7,66 @@ import {
   getMyTrainerProfile,
   updateTrainerQR,
   getAllTrainers,
+  createTrainerByAdmin,
+  updateTrainerByAdmin,
+  deleteTrainerByAdmin,
+  createTrainerProfile,
 } from "../controllers/trainer.controller.js";
 
-import { firebaseAuth } from "../middlewares/firebaseAuth.js";
 import { accountAuth } from "../middlewares/accountAuth.js";
+import { adminAuth } from "../middlewares/adminAuth.js";
+import { upload } from "../middlewares/s3Upload.js";
+import firebaseAuth from "../middlewares/firebaseAuth.js";
 
 const router = express.Router();
 
 /* =========================
-   AUTH / LOGIN
+   TRAINER SELF FLOW
 ========================= */
+
 router.post("/login", firebaseAuth, trainerLogin);
 
+router.post("/profile", firebaseAuth, accountAuth, createTrainerProfile);
+
+router.post("/complete-profile", firebaseAuth, accountAuth, trainerCompleteProfile);
+
+router.get("/me", firebaseAuth, accountAuth, getMyTrainerProfile);
+
+router.put("/update-qr", firebaseAuth, accountAuth, updateTrainerQR);
+
 /* =========================
-   COMPLETE PROFILE
+   ADMIN FLOW
 ========================= */
+
 router.post(
-  "/complete-profile",
-  firebaseAuth,
-  accountAuth,
-  trainerCompleteProfile
+  "/admin-create",
+  adminAuth,
+  upload.fields([
+    { name: "profile_image", maxCount: 1 },
+    { name: "certificate", maxCount: 1 },
+    { name: "qr_image", maxCount: 1 },
+  ]),
+  createTrainerByAdmin
 );
 
-/* =========================
-   MY TRAINERS (FIXED FOR MULTI)
-========================= */
-router.get(
-  "/me",
-  firebaseAuth,
-  accountAuth,
-  getMyTrainerProfile
-);
-
-/* =========================
-   UPDATE QR
-========================= */
 router.put(
-  "/update-qr",
-  firebaseAuth,
-  accountAuth,
-  updateTrainerQR
+  "/admin-update/:id",
+  adminAuth,
+  upload.fields([
+    { name: "profile_image", maxCount: 1 },
+    { name: "certificate", maxCount: 1 },
+    { name: "qr_image", maxCount: 1 },
+  ]),
+  updateTrainerByAdmin
 );
 
-/* =========================
-   ALL TRAINERS
-========================= */
-router.get("/", getAllTrainers);
+router.delete("/admin-delete/:id", adminAuth, deleteTrainerByAdmin);
 
 /* =========================
-   SINGLE TRAINER PROFILE
+   PUBLIC
 ========================= */
+
+router.get("/", getAllTrainers);
 router.get("/:id", getTrainerPublicProfile);
 
 export default router;

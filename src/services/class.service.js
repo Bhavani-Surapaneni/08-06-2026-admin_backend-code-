@@ -114,75 +114,100 @@ export const createClassByInstituteService = async (accountId, body) => {
 ───────────────────────────────────────────────────────────────────────────── */
 export const createClassByTrainerService = async (accountId, body) => {
   const pool = getPool();
-  validateClassBody(body);
 
   const {
-    title, description, category_id, subcategory_id,
-    price, duration, level, mode, max_students, meeting_link, schedule,
+    title,
+    description,
+    price,
+    duration,
+    level,
+    mode,
+    max_students,
+    meeting_link,
+    schedule,
   } = body;
 
-  // 1. Verify trainer is APPROVED
+  // Validation
+  if (!title) throw new Error("title is required");
+
+  // Get trainer id from account
   const trainerResult = await pool.request()
     .input("account_id", sql.BigInt, accountId)
-    .query(`SELECT id, approval_status, institute_id FROM trainers WHERE account_id = @account_id`);
-
-  if (trainerResult.recordset.length === 0) throw new Error("Trainer profile not found. Please complete your profile first.");
-  const trainer = trainerResult.recordset[0];
-  if (trainer.approval_status !== "APPROVED") {
-    throw new Error("Your profile is not approved yet. Please wait for admin approval.");
-  }
-
-  // 2. Verify category is in trainer specializations
-  const specCheck = await pool.request()
-    .input("trainer_id",  sql.BigInt, trainer.id)
-    .input("category_id", sql.BigInt, parseInt(category_id))
-    .query(`SELECT id FROM trainer_specializations WHERE trainer_id = @trainer_id AND category_id = @category_id`);
-
-  if (specCheck.recordset.length === 0) {
-    throw new Error("This category is not in your specializations. Please update your profile first.");
-  }
-
-  // 3. Status based on whether trainer is under institute or independent
-  const classStatus = trainer.institute_id ? "ACTIVE" : "DRAFT";
-
-  const classResult = await pool.request()
-    .input("title",          sql.NVarChar(150),  title.trim())
-    .input("description",    sql.NVarChar(1000), description || null)
-    .input("institute_id",   sql.BigInt,         trainer.institute_id || null)
-    .input("trainer_id",     sql.BigInt,         trainer.id)
-    .input("category_id",    sql.BigInt,         parseInt(category_id))
-    .input("subcategory_id", sql.BigInt,         subcategory_id ? parseInt(subcategory_id) : null)
-    .input("price",          sql.Decimal(10,2),  parseFloat(price) || 0)
-    .input("duration",       sql.Int,            parseInt(duration) || 60)
-    .input("level",          sql.NVarChar(20),   level || "BEGINNER")
-    .input("mode",           sql.NVarChar(20),   mode || "ONLINE")
-    .input("max_students",   sql.Int,            max_students ? parseInt(max_students) : null)
-    .input("meeting_link",   sql.NVarChar(500),  meeting_link || null)
-    .input("status",         sql.NVarChar(20),   classStatus)
     .query(`
-      INSERT INTO classes
-        (title, description, institute_id, trainer_id, category_id, subcategory_id,
-         price, duration, level, mode, max_students, meeting_link, status, is_active)
-      OUTPUT INSERTED.*
-      VALUES
-        (@title, @description, @institute_id, @trainer_id, @category_id, @subcategory_id,
-         @price, @duration, @level, @mode, @max_students, @meeting_link, @status, 1)
+      SELECT TOP 1 id FROM trainers
+      WHERE account_id = @account_id
+      ORDER BY
+        CASE WHEN approval_status = 'APPROVED' THEN 0 ELSE 1 END,
+        created_at DESC
     `);
 
-  const newClass = classResult.recordset[0];
+  if (!trainerResult.recordset.length) {
+    throw new Error("Trainer profile not found");
+  }
 
+  const trainerId = trainerResult.recordset[0].id;
+
+  // ✅ Auto-fetch category_id and subcategory_id from trainer's specialization
+  const specResult = await pool.request()
+    .input("trainer_id", sql.BigInt, trainerId)
+    .query(`
+      SELECT TOP 1 category_id, subcategory_id
+      FROM trainer_specializations
+      WHERE trainer_id = @trainer_id
+      ORDER BY id ASC
+    `);
+
+  if (!specResult.recordset.length) {
+    throw new Error(
+      "No specialization found on your profile. Please complete your profile with a category first."
+    );
+  }
+
+  // Use body values if explicitly passed, otherwise fall back to profile specialization
+  const category_id   = body.category_id
+    ? parseInt(body.category_id)
+    : specResult.recordset[0].category_id;
+
+  const subcategory_id = body.subcategory_id
+    ? parseInt(body.subcategory_id)
+    : specResult.recordset[0].subcategory_id;
+
+  // Insert class
+  const result = await pool.request()
+    .input("title",          sql.NVarChar(150),    title)
+    .input("description",    sql.NVarChar(sql.MAX), description || null)
+    .input("category_id",    sql.BigInt,            category_id)
+    .input("subcategory_id", sql.BigInt,            subcategory_id || null)
+    .input("trainer_id",     sql.BigInt,            trainerId)
+    .input("price",          sql.Decimal(10, 2),    parseFloat(price) || 0)
+    .input("duration",       sql.Int,               parseInt(duration) || 60)
+    .input("level",          sql.NVarChar(20),      level || "BEGINNER")
+    .input("mode",           sql.NVarChar(20),      mode || "ONLINE")
+    .input("max_students",   sql.Int,               max_students ? parseInt(max_students) : null)
+    .input("meeting_link",   sql.NVarChar(500),     meeting_link || null)
+    .query(`
+      INSERT INTO classes (
+        title, description, category_id, subcategory_id,
+        trainer_id, price, duration, level, mode,
+        max_students, meeting_link, status, is_active, created_at
+      )
+      OUTPUT INSERTED.*
+      VALUES (
+        @title, @description, @category_id, @subcategory_id,
+        @trainer_id, @price, @duration, @level, @mode,
+        @max_students, @meeting_link, 'ACTIVE', 1, SYSDATETIME()
+      )
+    `);
+
+  const newClass = result.recordset[0];
+
+  // Insert schedule if provided
   if (schedule) {
     await insertSchedule(pool, newClass.id, schedule);
   }
 
-  return {
-    ...newClass,
-    note: classStatus === "DRAFT"
-      ? "Your class is submitted for admin approval. It will go live once approved."
-      : "Class is live.",
-  };
+  return newClass;
 };
-
 /* ─────────────────────────────────────────────────────────────────────────────
    LIST CLASSES — public with filters
 ───────────────────────────────────────────────────────────────────────────── */
@@ -955,4 +980,79 @@ export const getClassesService = async (params) => {
   const result = await request.query(query);
 
   return result.recordset;
+};
+
+
+
+export const createClassByAdmin = async (req, res) => {
+  try {
+    const pool = getPool();
+
+    const {
+      title,
+      description,
+      category_id,
+      subcategory_id,
+      trainer_id,
+      institute_id,
+      price,
+      duration,
+      level,
+      mode,
+    } = req.body;
+
+    const result = await pool.request()
+      .input("title", sql.NVarChar(150), title)
+      .input("description", sql.NVarChar(1000), description || null)
+      .input("category_id", sql.BigInt, category_id)
+      .input("subcategory_id", sql.BigInt, subcategory_id || null)
+      .input("trainer_id", sql.BigInt, trainer_id || null)
+      .input("institute_id", sql.BigInt, institute_id || null)
+      .input("price", sql.Decimal(10,2), price || 0)
+      .input("duration", sql.Int, duration || 60)
+      .input("level", sql.NVarChar(20), level || "BEGINNER")
+      .input("mode", sql.NVarChar(20), mode || "ONLINE")
+      .query(`
+        INSERT INTO classes (
+          title,
+          description,
+          institute_id,
+          trainer_id,
+          category_id,
+          subcategory_id,
+          price,
+          duration,
+          level,
+          mode,
+          status,
+          is_active
+        )
+        OUTPUT INSERTED.*
+        VALUES (
+          @title,
+          @description,
+          @institute_id,
+          @trainer_id,
+          @category_id,
+          @subcategory_id,
+          @price,
+          @duration,
+          @level,
+          @mode,
+          'ACTIVE',
+          1
+        )
+      `);
+
+    res.status(201).json({
+      success: true,
+      data: result.recordset[0],
+    });
+
+  } catch (e) {
+    res.status(400).json({
+      success: false,
+      message: e.message,
+    });
+  }
 };
