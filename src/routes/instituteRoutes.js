@@ -3,6 +3,9 @@
 import express from "express";
 
 import { firebaseAuth } from "../middlewares/firebaseAuth.js";
+
+import express from "express";
+import firebaseAuth from "../middlewares/firebaseAuth.js";
 import accountAuth from "../middlewares/accountAuth.js";
 import { adminAuth } from "../middlewares/adminAuth.js";
 
@@ -20,6 +23,11 @@ import {
   approveInstitute,
   rejectInstitute,
 
+
+  createInstituteByAdmin,
+  approveInstitute,
+  rejectInstitute,
+
   getPendingInstitutes,
   getApprovedInstitutes,
   getRejectedInstitutes,
@@ -30,7 +38,6 @@ const router = express.Router();
 
 /* =====================================================
    PUBLIC ROUTES
-===================================================== */
 
 // Public Institutes List
 router.get(
@@ -40,7 +47,6 @@ router.get(
 
 /* =====================================================
    ADMIN ROUTES
-===================================================== */
 
 // Create Institute
 router.post(
@@ -93,7 +99,6 @@ router.patch(
 
 /* =====================================================
    INSTITUTE ROUTES
-===================================================== */
 
 // Login
 router.post(
@@ -111,6 +116,82 @@ firebaseAuth,
   createInstituteProfile
 );
 
+
+const router = express.Router();
+
+/* =====================================================
+   PUBLIC ROUTES
+
+// All Approved Institutes
+router.get(
+  "/",
+  listInstitutes
+);
+
+/* =====================================================
+   ADMIN ROUTES
+
+// Create Institute Directly
+router.post(
+  "/admin/create",
+  adminAuth,
+  createInstituteByAdmin
+);
+
+// Pending Institutes
+router.get(
+  "/admin/pending",
+  adminAuth,
+  getPendingInstitutes
+);
+
+// Rejected Institutes
+router.get(
+  "/admin/rejected",
+  adminAuth,
+  getRejectedInstitutes
+);
+
+// Approve Institute
+router.patch(
+  "/admin/:id/approve",
+  adminAuth,
+  approveInstitute
+);
+
+// Reject Institute
+router.patch(
+  "/admin/:id/reject",
+  adminAuth,
+  rejectInstitute
+);
+
+/* =====================================================
+   INSTITUTE ROUTES
+
+// Login
+router.post(
+  "/login",
+  firebaseAuth,
+  accountAuth,
+  instituteLogin
+);
+
+// Create Profile
+// router.post(
+//   "/create-profile",
+//   firebaseAuth,
+//   accountAuth,
+//   createInstituteProfile
+// );
+
+router.post(
+  "/create-profile",
+  createInstituteProfile
+);
+
+
+
 // Get Profile
 router.get(
   "/profile",
@@ -120,6 +201,7 @@ router.get(
 );
 
 // Approval Request
+// Submit Approval Request
 router.post(
   "/request-approval",
   firebaseAuth,
@@ -149,6 +231,30 @@ router.get(
   firebaseAuth,
   accountAuth,
   getInstituteBookings
+);
+
+router.get(
+  "/admin/approved",
+  adminAuth,
+  getApprovedInstitutes
+);
+
+router.get(
+  "/admin/all",
+  adminAuth,
+  getAllInstitutesAdmin
+);
+
+router.get(
+  "/admin/all",
+  adminAuth,
+  getAllInstitutesAdmin
+);
+
+router.get(
+  "/admin/approved",
+  adminAuth,
+  getApprovedInstitutes
 );
 
 export default router;

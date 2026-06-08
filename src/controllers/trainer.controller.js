@@ -1,7 +1,8 @@
 import { getPool, sql } from "../config/db.js";
 import { uploadToS3 } from "../middlewares/s3Upload.js";
+
 /* =========================================================
-   TRAINER LOGIN (MULTI-TRAINER ENABLED - CLEAN)
+   TRAINER LOGIN — FIXED: checks existing trainer first
 ========================================================= */
 export const trainerLogin = async (req, res) => {
   try {
@@ -47,23 +48,45 @@ export const trainerLogin = async (req, res) => {
         VALUES (@account_id, 'TRAINER', 'ACTIVE')
       `);
 
-    /* CREATE NEW TRAINER EVERY LOGIN (MULTI-TRAINER) */
-    const inserted = await pool.request()
+    /* ✅ FIX: CHECK IF TRAINER ALREADY EXISTS — don't create duplicate */
+    const existing = await pool.request()
       .input("account_id", sql.BigInt, accountId)
-      .input("phone_number", sql.NVarChar(20), phone_number || null)
-      .input("email", sql.NVarChar(255), email || null)
       .query(`
-        INSERT INTO trainers
-        (account_id, full_name, phone_number, email, approval_status, is_profile_completed, is_active)
-        OUTPUT INSERTED.*
-        VALUES (@account_id, 'Pending', @phone_number, @email, 'PENDING', 0, 1)
+        SELECT TOP 1 * FROM trainers
+        WHERE account_id = @account_id
+        ORDER BY
+          CASE WHEN approval_status = 'APPROVED' THEN 0
+               WHEN is_profile_completed = 1 THEN 1
+               ELSE 2
+          END,
+          created_at DESC
       `);
+
+    let trainerRecord;
+
+    if (existing.recordset.length > 0) {
+      /* ✅ Trainer exists — return best record (approved first) */
+      trainerRecord = existing.recordset[0];
+    } else {
+      /* 🆕 First time login — create a blank trainer record */
+      const inserted = await pool.request()
+        .input("account_id", sql.BigInt, accountId)
+        .input("phone_number", sql.NVarChar(20), phone_number || null)
+        .input("email", sql.NVarChar(255), email || null)
+        .query(`
+          INSERT INTO trainers
+          (account_id, full_name, phone_number, email, approval_status, is_profile_completed, is_active)
+          OUTPUT INSERTED.*
+          VALUES (@account_id, 'Pending', @phone_number, @email, 'PENDING', 0, 1)
+        `);
+      trainerRecord = inserted.recordset[0];
+    }
 
     res.json({
       success: true,
       data: {
         account,
-        trainer: inserted.recordset[0]
+        trainer: trainerRecord
       }
     });
 
@@ -75,7 +98,7 @@ export const trainerLogin = async (req, res) => {
 
 
 /* =========================================================
-   COMPLETE TRAINER PROFILE (FIXED MULTI SUPPORT)
+   COMPLETE TRAINER PROFILE
 ========================================================= */
 export const trainerCompleteProfile = async (req, res) => {
   try {
@@ -117,7 +140,7 @@ export const trainerCompleteProfile = async (req, res) => {
       }
     }
 
-    /* GET LATEST TRAINER (IMPORTANT FIX) */
+    /* GET LATEST TRAINER */
     const trainerResult = await pool.request()
       .input("account_id", sql.BigInt, accountId)
       .query(`
@@ -194,6 +217,8 @@ export const trainerCompleteProfile = async (req, res) => {
 };
 
 
+/* =========================================================
+   GET ALL TRAINERS (ADMIN)
 export const getAllTrainers = async (req, res) => {
   try {
     const pool = getPool();
@@ -226,26 +251,17 @@ export const getAllTrainers = async (req, res) => {
           t.is_active,
           t.created_at,
           t.updated_at,
-
           ISNULL((
             SELECT COUNT(*)
             FROM bookings b
             WHERE b.trainer_id = t.id
             AND b.status = 'CONFIRMED'
           ),0) AS total_students,
-
           STRING_AGG(sc.name, ', ') AS subcategories
-
       FROM trainers t
-
-      LEFT JOIN trainer_specializations ts
-      ON ts.trainer_id = t.id
-
-      LEFT JOIN subcategories sc
-      ON sc.id = ts.subcategory_id
-
+      LEFT JOIN trainer_specializations ts ON ts.trainer_id = t.id
+      LEFT JOIN subcategories sc ON sc.id = ts.subcategory_id
       WHERE t.is_active = 1
-
       GROUP BY
           t.id,
           t.account_id,
@@ -273,6 +289,12 @@ export const getAllTrainers = async (req, res) => {
           t.created_at,
           t.updated_at
 
+          t.id, t.account_id, t.institute_id, t.full_name, t.bio,
+          t.experience_years, t.email, t.phone_number, t.profile_image,
+          t.certificate_url, t.specialty, t.languages, t.response_rate,
+          t.skills, t.certifications, t.schedule, t.rating, t.total_reviews,
+          t.approval_status, t.is_profile_completed, t.is_active,
+          t.created_at, t.updated_at
       ORDER BY t.created_at DESC
     `);
 
@@ -284,16 +306,13 @@ export const getAllTrainers = async (req, res) => {
 
   } catch (err) {
     console.error("getAllTrainers error:", err);
-
-    return res.status(500).json({
-      success: false,
-      message: err.message
-    });
+    return res.status(500).json({ success: false, message: err.message });
   }
 };
 
+
 /* =========================================================
-   GET MY TRAINERS (MULTI SUPPORT)
+   GET MY TRAINER PROFILE
 ========================================================= */
 export const getMyTrainerProfile = async (req, res) => {
   try {
@@ -306,7 +325,12 @@ export const getMyTrainerProfile = async (req, res) => {
         SELECT *
         FROM trainers
         WHERE account_id = @account_id
-        ORDER BY created_at DESC
+        ORDER BY
+          CASE WHEN approval_status = 'APPROVED' THEN 0
+               WHEN is_profile_completed = 1 THEN 1
+               ELSE 2
+          END,
+          created_at DESC
       `);
 
     return res.json({
@@ -315,12 +339,10 @@ export const getMyTrainerProfile = async (req, res) => {
     });
 
   } catch (err) {
-    return res.status(500).json({
-      success: false,
-      message: err.message
-    });
+    return res.status(500).json({ success: false, message: err.message });
   }
 };
+
 
 /* =========================================================
    PUBLIC PROFILE
@@ -338,66 +360,32 @@ export const getTrainerPublicProfile = async (req, res) => {
           i.name AS institute_name,
           STRING_AGG(sc.name, ', ') AS subcategories
         FROM trainers t
-        LEFT JOIN institutes i
-          ON t.institute_id = i.id
-        LEFT JOIN trainer_specializations ts
-          ON ts.trainer_id = t.id
-        LEFT JOIN subcategories sc
-          ON sc.id = ts.subcategory_id
+        LEFT JOIN institutes i ON t.institute_id = i.id
+        LEFT JOIN trainer_specializations ts ON ts.trainer_id = t.id
+        LEFT JOIN subcategories sc ON sc.id = ts.subcategory_id
         WHERE t.id = @id
         GROUP BY
-          t.id,
-          t.account_id,
-          t.institute_id,
-          t.full_name,
-          t.bio,
-          t.experience_years,
-          t.email,
-          t.phone_number,
-          t.profile_image,
-          t.certificate_url,
-          t.approval_status,
-          t.rejection_reason,
-          t.is_active,
-          t.created_at,
-          t.updated_at,
-          t.is_profile_completed,
-          t.qr_image_url,
-          t.upi_id,
-          t.rating,
-          t.total_reviews,
-          t.max_students,
-          t.specialty,
-          t.languages,
-          t.certifications,
-          t.skills,
-          t.schedule,
-          t.response_rate,
-          t.total_students,
-          i.name
+          t.id, t.account_id, t.institute_id, t.full_name, t.bio,
+          t.experience_years, t.email, t.phone_number, t.profile_image,
+          t.certificate_url, t.approval_status, t.rejection_reason,
+          t.is_active, t.created_at, t.updated_at, t.is_profile_completed,
+          t.qr_image_url, t.upi_id, t.rating, t.total_reviews, t.max_students,
+          t.specialty, t.languages, t.certifications, t.skills, t.schedule,
+          t.response_rate, t.total_students, i.name
       `);
 
     if (!result.recordset.length) {
-      return res.status(404).json({
-        success: false,
-        message: "Trainer not found"
-      });
+      return res.status(404).json({ success: false, message: "Trainer not found" });
     }
 
-    res.json({
-      success: true,
-      data: result.recordset[0]
-    });
+    res.json({ success: true, data: result.recordset[0] });
 
   } catch (err) {
     console.error("getTrainerPublicProfile error:", err);
-
-    res.status(500).json({
-      success: false,
-      message: err.message
-    });
+    res.status(500).json({ success: false, message: err.message });
   }
 };
+
 
 /* =========================================================
    UPDATE QR / UPI
@@ -410,6 +398,8 @@ export const updateTrainerQR = async (req, res) => {
 
     const result = await pool.request()
       .input("account_id", sql.BigInt, accountId)
+      .input("qr_image_url", sql.NVarChar(500), qr_image_url || null)
+      .input("upi_id", sql.NVarChar(100), upi_id || null)
       .query(`
         UPDATE trainers SET
           qr_image_url = @qr_image_url,
@@ -429,16 +419,15 @@ export const updateTrainerQR = async (req, res) => {
   }
 };
 
+
+/* =========================================================
+   CREATE TRAINER (basic)
+========================================================= */
 export const createTrainer = async (req, res) => {
   try {
     const pool = getPool();
     const accountId = req.account.id;
-
-    const {
-      full_name,
-      email,
-      phone_number
-    } = req.body;
+    const { full_name, email, phone_number } = req.body;
 
     const result = await pool.request()
       .input("account_id", sql.BigInt, accountId)
@@ -447,32 +436,17 @@ export const createTrainer = async (req, res) => {
       .input("phone_number", sql.NVarChar(20), phone_number || null)
       .query(`
         INSERT INTO trainers (
-          account_id,
-          full_name,
-          email,
-          phone_number,
-          approval_status,
-          is_profile_completed,
-          is_active,
-          created_at
+          account_id, full_name, email, phone_number,
+          approval_status, is_profile_completed, is_active, created_at
         )
         OUTPUT INSERTED.*
         VALUES (
-          @account_id,
-          @full_name,
-          @email,
-          @phone_number,
-          'PENDING',
-          0,
-          1,
-          SYSDATETIME()
+          @account_id, @full_name, @email, @phone_number,
+          'PENDING', 0, 1, SYSDATETIME()
         )
       `);
 
-    res.json({
-      success: true,
-      data: result.recordset[0]
-    });
+    res.json({ success: true, data: result.recordset[0] });
 
   } catch (err) {
     console.error(err);
@@ -481,6 +455,8 @@ export const createTrainer = async (req, res) => {
 };
 
 
+/* =========================================================
+   CREATE TRAINER BY ADMIN
 export const createTrainerByAdmin = async (req, res) => {
   try {
     const pool = getPool();
@@ -652,6 +628,72 @@ export const createTrainerByAdmin = async (req, res) => {
   }
 };
 
+      full_name, email, phone_number, institute_id, experience_years, bio,
+      specialty, languages, skills, certifications, schedule, response_rate,
+      rating, total_reviews, total_students, max_students,
+    } = req.body;
+
+    if (!full_name) {
+      return res.status(400).json({ success: false, message: "full_name is required" });
+    }
+
+    let profileImageUrl = null;
+    let certificateUrl  = null;
+    let qrImageUrl      = null;
+
+    if (req.files?.profile_image?.[0]) profileImageUrl = await uploadToS3(req.files.profile_image[0], "trainers");
+    if (req.files?.certificate?.[0])   certificateUrl  = await uploadToS3(req.files.certificate[0], "certificates");
+    if (req.files?.qr_image?.[0])      qrImageUrl      = await uploadToS3(req.files.qr_image[0], "trainer-qr");
+
+    const result = await pool.request()
+      .input("full_name",      sql.NVarChar(150),    full_name)
+      .input("email",          sql.NVarChar(255),    email || null)
+      .input("phone_number",   sql.NVarChar(20),     phone_number || null)
+      .input("institute_id",   sql.BigInt,           institute_id || null)
+      .input("experience_years", sql.Int,            experience_years || 0)
+      .input("bio",            sql.NVarChar(sql.MAX), bio || null)
+      .input("profile_image",  sql.NVarChar(500),    profileImageUrl)
+      .input("certificate_url", sql.NVarChar(500),   certificateUrl)
+      .input("qr_image_url",   sql.NVarChar(500),    qrImageUrl)
+      .input("specialty",      sql.NVarChar(255),    specialty || null)
+      .input("languages",      sql.NVarChar(500),    languages || null)
+      .input("skills",         sql.NVarChar(sql.MAX), skills || null)
+      .input("certifications", sql.NVarChar(sql.MAX), certifications || null)
+      .input("schedule",       sql.NVarChar(sql.MAX), schedule || null)
+      .input("response_rate",  sql.NVarChar(50),     response_rate || null)
+      .input("rating",         sql.Decimal(3, 2),    rating || null)
+      .input("total_reviews",  sql.Int,              total_reviews || 0)
+      .input("total_students", sql.Int,              total_students || 0)
+      .input("max_students",   sql.Int,              max_students || 0)
+      .query(`
+        INSERT INTO trainers (
+          institute_id, full_name, email, phone_number, experience_years, bio,
+          profile_image, certificate_url, qr_image_url,
+          specialty, languages, skills, certifications, schedule, response_rate,
+          rating, total_reviews, total_students, max_students,
+          approval_status, is_profile_completed, is_active, created_at
+        )
+        OUTPUT INSERTED.*
+        VALUES (
+          @institute_id, @full_name, @email, @phone_number, @experience_years, @bio,
+          @profile_image, @certificate_url, @qr_image_url,
+          @specialty, @languages, @skills, @certifications, @schedule, @response_rate,
+          @rating, @total_reviews, @total_students, @max_students,
+          'APPROVED', 1, 1, SYSDATETIME()
+        )
+      `);
+
+    return res.status(201).json({ success: true, message: "Trainer created successfully", data: result.recordset[0] });
+
+  } catch (err) {
+    console.error("createTrainerByAdmin error:", err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+
+/* =========================================================
+   DELETE TRAINER BY ADMIN
 export const deleteTrainerByAdmin = async (req, res) => {
   try {
     const pool = getPool();
@@ -703,6 +745,28 @@ export const deleteTrainerByAdmin = async (req, res) => {
     });
   }
 };
+    const trainer = await pool.request()
+      .input("id", sql.BigInt, id)
+      .query(`SELECT id FROM trainers WHERE id = @id`);
+
+    if (!trainer.recordset.length) {
+      return res.status(404).json({ success: false, message: "Trainer not found" });
+    }
+
+    await pool.request().input("trainer_id", sql.BigInt, id).query(`DELETE FROM trainer_specializations WHERE trainer_id = @trainer_id`);
+    await pool.request().input("id", sql.BigInt, id).query(`DELETE FROM trainers WHERE id = @id`);
+
+    return res.status(200).json({ success: true, message: "Trainer deleted successfully" });
+
+  } catch (err) {
+    console.error("deleteTrainerByAdmin error:", err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+
+/* =========================================================
+   UPDATE TRAINER BY ADMIN
 export const updateTrainerByAdmin = async (req, res) => {
   try {
     const pool = getPool();
@@ -822,6 +886,66 @@ export const updateTrainerByAdmin = async (req, res) => {
 
           updated_at = SYSDATETIME()
 
+      full_name, email, phone_number, institute_id, bio, experience_years,
+      specialty, languages, skills, certifications, schedule, response_rate,
+      rating, total_reviews, total_students, max_students, approval_status, is_active,
+    } = req.body;
+
+    let profileImageUrl = null;
+    let certificateUrl  = null;
+    let qrImageUrl      = null;
+
+    if (req.files?.profile_image?.[0]) profileImageUrl = await uploadToS3(req.files.profile_image[0], "trainers/profile");
+    if (req.files?.certificate?.[0])   certificateUrl  = await uploadToS3(req.files.certificate[0], "trainers/certificates");
+    if (req.files?.qr_image?.[0])      qrImageUrl      = await uploadToS3(req.files.qr_image[0], "trainers/qr");
+
+    const result = await pool.request()
+      .input("id",             sql.BigInt,           id)
+      .input("full_name",      sql.NVarChar(150),    full_name || null)
+      .input("email",          sql.NVarChar(255),    email || null)
+      .input("phone_number",   sql.NVarChar(20),     phone_number || null)
+      .input("institute_id",   sql.BigInt,           institute_id || null)
+      .input("bio",            sql.NVarChar(sql.MAX), bio || null)
+      .input("experience_years", sql.Int,            experience_years || null)
+      .input("specialty",      sql.NVarChar(255),    specialty || null)
+      .input("languages",      sql.NVarChar(500),    languages || null)
+      .input("skills",         sql.NVarChar(sql.MAX), skills || null)
+      .input("certifications", sql.NVarChar(sql.MAX), certifications || null)
+      .input("schedule",       sql.NVarChar(sql.MAX), schedule || null)
+      .input("response_rate",  sql.NVarChar(50),     response_rate || null)
+      .input("rating",         sql.Decimal(3, 2),    rating || null)
+      .input("total_reviews",  sql.Int,              total_reviews || 0)
+      .input("total_students", sql.Int,              total_students || 0)
+      .input("max_students",   sql.Int,              max_students || 0)
+      .input("approval_status", sql.NVarChar(20),    approval_status || null)
+      .input("is_active",      sql.Bit,              is_active)
+      .input("profile_image",  sql.NVarChar(1000),   profileImageUrl)
+      .input("certificate_url", sql.NVarChar(1000),  certificateUrl)
+      .input("qr_image_url",   sql.NVarChar(1000),   qrImageUrl)
+      .query(`
+        UPDATE trainers SET
+          full_name        = ISNULL(@full_name, full_name),
+          email            = ISNULL(@email, email),
+          phone_number     = ISNULL(@phone_number, phone_number),
+          institute_id     = ISNULL(@institute_id, institute_id),
+          bio              = ISNULL(@bio, bio),
+          experience_years = ISNULL(@experience_years, experience_years),
+          specialty        = ISNULL(@specialty, specialty),
+          languages        = ISNULL(@languages, languages),
+          skills           = ISNULL(@skills, skills),
+          certifications   = ISNULL(@certifications, certifications),
+          schedule         = ISNULL(@schedule, schedule),
+          response_rate    = ISNULL(@response_rate, response_rate),
+          rating           = ISNULL(@rating, rating),
+          total_reviews    = ISNULL(@total_reviews, total_reviews),
+          total_students   = ISNULL(@total_students, total_students),
+          max_students     = ISNULL(@max_students, max_students),
+          profile_image    = ISNULL(@profile_image, profile_image),
+          certificate_url  = ISNULL(@certificate_url, certificate_url),
+          qr_image_url     = ISNULL(@qr_image_url, qr_image_url),
+          approval_status  = ISNULL(@approval_status, approval_status),
+          is_active        = ISNULL(@is_active, is_active),
+          updated_at       = SYSDATETIME()
         OUTPUT INSERTED.*
         WHERE id = @id
       `);
@@ -1138,5 +1262,52 @@ async (req, res) => {
       success: false,
       message: err.message,
     });
+      return res.status(404).json({ success: false, message: "Trainer not found" });
+    }
+
+    return res.status(200).json({ success: true, message: "Trainer updated successfully", data: result.recordset[0] });
+
+  } catch (err) {
+    console.error("updateTrainerByAdmin error:", err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+
+/* =========================================================
+   CREATE TRAINER PROFILE
+export const createTrainerProfile = async (req, res) => {
+  try {
+    const pool = getPool();
+    const accountId = req.account?.id;
+
+    if (!accountId) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
+
+    const { full_name, email, phone_number } = req.body;
+
+    const result = await pool.request()
+      .input("account_id",   sql.BigInt,      accountId)
+      .input("full_name",    sql.NVarChar(150), full_name || "Pending")
+      .input("email",        sql.NVarChar(255), email || null)
+      .input("phone_number", sql.NVarChar(20),  phone_number || null)
+      .query(`
+        INSERT INTO trainers (
+          account_id, full_name, email, phone_number,
+          approval_status, is_profile_completed, is_active, created_at
+        )
+        OUTPUT INSERTED.*
+        VALUES (
+          @account_id, @full_name, @email, @phone_number,
+          'PENDING', 0, 1, SYSDATETIME()
+        )
+      `);
+
+    res.json({ success: true, data: result.recordset[0] });
+
+  } catch (err) {
+    console.error("createTrainerProfile error:", err);
+    res.status(500).json({ message: err.message });
   }
 };

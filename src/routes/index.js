@@ -18,10 +18,15 @@ import couponRoutes from "./coupon.routes.js";
 import sessionRoutes from "./session.routes.js";
 import testimonialRoutes from "./testimonial.routes.js";
 // import emailRoutes from "./email.routes.js";  // ✨ NEW
+import trainerDashboardRoutes from "./trainer.dashboard.routes.js";
 
 const router = express.Router();
 
 // router.use("/subscriptions", subscriptionRoutes);
+
+
+
+router.use("/trainer-dashboard", trainerDashboardRoutes);
 router.use("/admin-auth", adminAuthRoutes);
 router.use("/auth", authRoutes);
 router.use("/users", userRoutes);
