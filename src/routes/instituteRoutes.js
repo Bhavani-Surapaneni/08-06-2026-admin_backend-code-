@@ -1,4 +1,9 @@
 
+
+import express from "express";
+
+import { firebaseAuth } from "../middlewares/firebaseAuth.js";
+
 import express from "express";
 import firebaseAuth from "../middlewares/firebaseAuth.js";
 import accountAuth from "../middlewares/accountAuth.js";
@@ -18,6 +23,11 @@ import {
   approveInstitute,
   rejectInstitute,
 
+
+  createInstituteByAdmin,
+  approveInstitute,
+  rejectInstitute,
+
   getPendingInstitutes,
   getApprovedInstitutes,
   getRejectedInstitutes,
@@ -28,7 +38,89 @@ const router = express.Router();
 
 /* =====================================================
    PUBLIC ROUTES
-===================================================== */
+
+// Public Institutes List
+router.get(
+  "/",
+  listInstitutes
+);
+
+/* =====================================================
+   ADMIN ROUTES
+
+// Create Institute
+router.post(
+  "/admin/create",
+  adminAuth,
+  createInstituteByAdmin
+);
+
+// All Institutes
+router.get(
+  "/admin/all",
+  adminAuth,
+  getAllInstitutesAdmin
+);
+
+// Pending Institutes
+router.get(
+  "/admin/pending",
+  adminAuth,
+  getPendingInstitutes
+);
+
+// Approved Institutes
+router.get(
+  "/admin/approved",
+  adminAuth,
+  getApprovedInstitutes
+);
+
+// Rejected Institutes
+router.get(
+  "/admin/rejected",
+  adminAuth,
+  getRejectedInstitutes
+);
+
+// Approve Institute
+router.patch(
+  "/admin/:id/approve",
+  adminAuth,
+  approveInstitute
+);
+
+// Reject Institute
+router.patch(
+  "/admin/:id/reject",
+  adminAuth,
+  rejectInstitute
+);
+
+/* =====================================================
+   INSTITUTE ROUTES
+
+// Login
+router.post(
+  "/login",
+  firebaseAuth,
+  accountAuth,
+  instituteLogin
+);
+
+// Create / Update Profile
+router.post(
+  "/create-profile",
+firebaseAuth,
+  accountAuth,
+  createInstituteProfile
+);
+
+
+const router = express.Router();
+
+/* =====================================================
+   PUBLIC ROUTES
 
 // All Approved Institutes
 router.get(
@@ -38,7 +130,6 @@ router.get(
 
 /* =====================================================
    ADMIN ROUTES
-===================================================== */
 
 // Create Institute Directly
 router.post(
@@ -77,7 +168,6 @@ router.patch(
 
 /* =====================================================
    INSTITUTE ROUTES
-===================================================== */
 
 // Login
 router.post(
@@ -110,6 +200,7 @@ router.get(
   getInstituteProfile
 );
 
+// Approval Request
 // Submit Approval Request
 router.post(
   "/request-approval",
